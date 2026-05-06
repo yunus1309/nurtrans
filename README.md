@@ -5,7 +5,7 @@ MVP-Prototyp für eine kollaborative Übersetzungssoftware mit Glossar-Reiter un
 ## Start
 
 ```bash
-docker compose up --build
+docker compose up --build --force-recreate
 ```
 
 Default-Ports (bewusst nicht Standardports, um Port-Konflikte zu vermeiden):
@@ -20,7 +20,7 @@ Default-Ports (bewusst nicht Standardports, um Port-Konflikte zu vermeiden):
 Du kannst Ports beim Start überschreiben:
 
 ```bash
-NURTRANS_API_PORT=28000 NURTRANS_FRONTEND_PORT=25173 docker compose up --build
+NURTRANS_API_PORT=28000 NURTRANS_FRONTEND_PORT=25173 docker compose up --build --force-recreate
 ```
 
 Oder du prüfst belegte Ports:
@@ -55,3 +55,12 @@ docker compose up
 - Prüfe, ob die API läuft: `http://localhost:18000/health`
 - Im Fehlerfall zeigt das Frontend automatisch Demo-Segmente an und blendet einen Hinweis ein.
 - Wenn API-Port geändert wurde, setze z. B. `VITE_API_BASE_URL=http://localhost:28000` für das Frontend.
+
+
+Wenn du weiterhin einen alten API-Stand siehst, führe einen sauberen Rebuild aus:
+
+```bash
+docker compose down --remove-orphans
+docker compose build --no-cache api
+docker compose up --build --force-recreate
+```
