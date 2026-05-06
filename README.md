@@ -49,3 +49,9 @@ Wenn der API-Container mit `email-validator is not installed` abstürzt, stelle 
 docker compose build --no-cache api
 docker compose up
 ```
+
+## Wenn du keinen Text zum Übersetzen siehst
+
+- Prüfe, ob die API läuft: `http://localhost:18000/health`
+- Im Fehlerfall zeigt das Frontend automatisch Demo-Segmente an und blendet einen Hinweis ein.
+- Wenn API-Port geändert wurde, setze z. B. `VITE_API_BASE_URL=http://localhost:28000` für das Frontend.
