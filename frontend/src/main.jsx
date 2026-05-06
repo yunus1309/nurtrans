@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:18000'
 
 function SegmentRow({ segment, onSave }) {
   const [target, setTarget] = useState(segment.target)

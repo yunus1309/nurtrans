@@ -8,8 +8,26 @@ MVP-Prototyp für eine kollaborative Übersetzungssoftware mit Glossar-Reiter un
 docker compose up --build
 ```
 
-- Frontend: http://localhost:5173
-- Backend: http://localhost:8000/docs
+Default-Ports (bewusst nicht Standardports, um Port-Konflikte zu vermeiden):
+
+- Frontend: http://localhost:15173
+- Backend: http://localhost:18000/docs
+- PostgreSQL: `localhost:15432`
+- Redis: `localhost:16379`
+
+## Wenn ein Port schon belegt ist
+
+Du kannst Ports beim Start überschreiben:
+
+```bash
+NURTRANS_API_PORT=28000 NURTRANS_FRONTEND_PORT=25173 docker compose up --build
+```
+
+Oder du prüfst belegte Ports:
+
+```bash
+ss -ltnp | rg ':8000|:5173|:5432|:6379'
+```
 
 ## Enthalten
 

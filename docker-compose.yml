@@ -2,12 +2,12 @@ services:
   api:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "${NURTRANS_API_PORT:-18000}:8000"
 
   frontend:
     build: ./frontend
     ports:
-      - "5173:5173"
+      - "${NURTRANS_FRONTEND_PORT:-15173}:5173"
     depends_on:
       - api
 
@@ -18,14 +18,14 @@ services:
       POSTGRES_PASSWORD: nurtrans
       POSTGRES_DB: nurtrans
     ports:
-      - "5432:5432"
+      - "${NURTRANS_POSTGRES_PORT:-15432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${NURTRANS_REDIS_PORT:-16379}:6379"
 
 volumes:
   pgdata:
