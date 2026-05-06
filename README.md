@@ -40,3 +40,12 @@ ss -ltnp | rg ':8000|:5173|:5432|:6379'
 ## Hinweis
 
 Dieser Stand nutzt im Backend für die Domänenobjekte noch In-Memory-Speicher als MVP. PostgreSQL/Redis sind im Compose bereits eingebunden und der nächste Schritt ist die Persistenz-Migration.
+
+## Troubleshooting
+
+Wenn der API-Container mit `email-validator is not installed` abstürzt, stelle sicher, dass das aktuelle Image gebaut wird:
+
+```bash
+docker compose build --no-cache api
+docker compose up
+```
