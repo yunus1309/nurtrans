@@ -2,6 +2,11 @@ version: '3.8'
 services:
   db:
     image: ankane/pgvector:latest
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-user} -d ${POSTGRES_DB:-app_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
@@ -26,8 +31,10 @@ services:
     ports:
       - "18088:8088"
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@db/${POSTGRES_DB:-app_db}
       - REDIS_URL=redis://redis:6379/0
@@ -41,8 +48,10 @@ services:
     volumes:
       - ./backend:/app
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@db/${POSTGRES_DB:-app_db}
       - REDIS_URL=redis://redis:6379/0
