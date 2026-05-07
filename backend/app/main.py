@@ -1,121 +1,165 @@
-from datetime import datetime, timedelta, timezone
-from typing import Literal
-
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.orm import Session
+from app.database import engine, Base, get_db
+from app.models import User, Project, Document, Segment, Paragraph
+from app.schemas import UserCreate, UserResponse, Token, ProjectCreate, ProjectResponse, SegmentResponse, UserUpdate
+from fastapi.security import OAuth2PasswordRequestForm
+from app.auth import get_password_hash, verify_password, create_access_token, get_current_user
+from app.worker.tasks import process_document
+from typing import List
+from app.sockets import router as sockets_router
+from app.glossary import router as glossary_router
+from app.book import router as book_router
+from app.comments import router as comments_router
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
 
-app = FastAPI(title="NurTrans API", version="0.1.0")
+Base.metadata.create_all(bind=engine)
 
+app = FastAPI(title="Translation Software API")
+
+# Setup CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:15173", "http://localhost:5173"],
+    allow_origins=["*"], # In production, set this to the actual frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# MVP in-memory stores (replace with PostgreSQL/Redis in next iteration)
-USERS = {}
-GLOSSARY = {}
-SEGMENTS = {
-    1: {"id": 1, "source": "Hallo Welt", "target": "", "status": "new", "version": 1},
-    2: {"id": 2, "source": "Das ist ein Test", "target": "", "status": "new", "version": 1},
-}
+app.include_router(sockets_router)
+app.include_router(glossary_router)
+app.include_router(book_router)
+app.include_router(comments_router)
 
+@app.post("/auth/register", response_model=UserResponse)
+def register(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str
+    hashed_password = get_password_hash(user.password)
+    new_user = User(username=user.username, hashed_password=hashed_password, language=user.language)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
 
+@app.post("/auth/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == form_data.username).first()
+    if not db_user or not verify_password(form_data.password, db_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": db_user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+@app.get("/users/me", response_model=UserResponse)
+def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user
 
+@app.put("/users/me/language", response_model=UserResponse)
+def update_user_language(user_update: UserUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user_update.language is not None:
+        current_user.language = user_update.language
+        db.commit()
+        db.refresh(current_user)
+    return current_user
 
-class GlossaryEntry(BaseModel):
-    id: int | None = None
-    source_term: str
-    target_term: str
-    description: str = ""
-    status: Literal["approved", "draft", "deprecated"] = "approved"
+@app.post("/projects", response_model=ProjectResponse)
+def create_project(project: ProjectCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    new_project = Project(
+        name=project.name,
+        description=project.description,
+        source_language=project.source_language,
+        target_language=project.target_language
+    )
+    db.add(new_project)
+    db.commit()
+    db.refresh(new_project)
+    # Admin rights are handled via ProjectUser in a full impl
+    return new_project
 
+@app.get("/projects", response_model=List[ProjectResponse])
+def get_projects(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(Project).all()
 
-class ReplaceRequest(BaseModel):
-    source_term: str
-    new_target_term: str
-    apply_to_done_segments: bool = False
+@app.get("/projects/{project_id}", response_model=ProjectResponse)
+def get_project(project_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
+@app.post("/projects/{project_id}/documents")
+async def upload_document(
+    project_id: int,
+    file: UploadFile = File(...),
+    page_number: int = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Run synchronous database query in a threadpool to avoid blocking the event loop
+    project = await run_in_threadpool(
+        db.query(Project).filter(Project.id == project_id).first
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
 
+    file_content = await file.read()
+    file_extension = ""
+    if file.filename.endswith(".txt"):
+        file_extension = ".txt"
+    elif file.filename.endswith(".docx"):
+        file_extension = ".docx"
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format")
+
+    import base64
+
+    new_doc = Document(project_id=project.id, title=file.filename, page_number=page_number)
+
+    def save_document_sync(doc):
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
+    await run_in_threadpool(save_document_sync, new_doc)
+
+    # Queue the background task - encoding bytes to b64 string to be JSON serializable for Celery
+    b64_content = base64.b64encode(file_content).decode('utf-8')
+    process_document.delay(new_doc.id, b64_content, file_extension)
+
+    return {"message": "Document uploaded and processing started", "document_id": new_doc.id}
+
+@app.get("/documents/{document_id}/segments", response_model=List[SegmentResponse])
+def get_document_segments(document_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    segments = db.query(Segment).join(Paragraph).filter(Paragraph.document_id == document_id).order_by(Paragraph.order, Segment.order).all()
+    return segments
+
+from pydantic import BaseModel
 class SegmentUpdateRequest(BaseModel):
-    target: str
-    status: Literal["new", "in_progress", "done"]
-    version: int
+    target_text: str
+    status: str
 
-
-@app.get("/health")
-def health():
-    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
-
-
-@app.post("/auth/register")
-def register(payload: RegisterRequest):
-    if payload.email in USERS:
-        raise HTTPException(400, "User already exists")
-    USERS[payload.email] = {"password": payload.password}
-    return {"message": "registered"}
-
-
-@app.post("/auth/login")
-def login(payload: LoginRequest):
-    user = USERS.get(payload.email)
-    if not user or user["password"] != payload.password:
-        raise HTTPException(401, "Invalid credentials")
-    return {
-        "access_token": f"mvp-token-{payload.email}",
-        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
-    }
-
-
-@app.get("/segments")
-def list_segments():
-    return list(SEGMENTS.values())
-
-
-@app.patch("/segments/{segment_id}")
-def update_segment(segment_id: int, payload: SegmentUpdateRequest):
-    segment = SEGMENTS.get(segment_id)
+@app.put("/segments/{segment_id}", response_model=SegmentResponse)
+def update_segment(segment_id: int, update_data: SegmentUpdateRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    segment = db.query(Segment).filter(Segment.id == segment_id).first()
     if not segment:
-        raise HTTPException(404, "Segment not found")
-    if payload.version != segment["version"]:
-        raise HTTPException(409, "Version conflict")
-    segment["target"] = payload.target
-    segment["status"] = payload.status
-    segment["version"] += 1
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    segment.target_text = update_data.target_text
+    segment.status = update_data.status
+    segment.last_modified_by = current_user.id
+
+    db.commit()
+    db.refresh(segment)
     return segment
-
-
-@app.get("/glossary")
-def list_glossary():
-    return list(GLOSSARY.values())
-
-
-@app.post("/glossary")
-def add_glossary(entry: GlossaryEntry):
-    next_id = max(GLOSSARY.keys(), default=0) + 1
-    obj = entry.model_dump()
-    obj["id"] = next_id
-    GLOSSARY[next_id] = obj
-    return obj
-
-
-@app.post("/glossary/replace-preview")
-def replace_preview(payload: ReplaceRequest):
-    hits = []
-    for seg in SEGMENTS.values():
-        if payload.source_term.lower() in seg["source"].lower() or payload.source_term.lower() in seg["target"].lower():
-            if not payload.apply_to_done_segments and seg["status"] == "done":
-                continue
-            hits.append(seg)
-    return {"count": len(hits), "hits": hits}
